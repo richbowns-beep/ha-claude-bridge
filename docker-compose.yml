@@ -1,0 +1,22 @@
+services:
+  ha-claude-bridge:
+    build: .
+    # Or, once you've pushed an image somewhere, swap the `build: .` line for:
+    # image: ghcr.io/<you>/ha-claude-bridge:latest
+    container_name: ha-claude-bridge
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    # If Home Assistant runs with host networking on Unraid (common default),
+    # HA_URL in .env can just point at the Unraid box's LAN IP and this can
+    # stay on the default bridge network, as above. If HA instead runs on a
+    # custom Docker network, join that network here instead and set
+    # HA_URL=http://<ha-container-name>:8123, e.g.:
+    # networks:
+    #   - homeassistant_default
+
+# networks:
+#   homeassistant_default:
+#     external: true
