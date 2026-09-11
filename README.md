@@ -23,6 +23,13 @@ write automation/scene definitions on your behalf.
 - `get_automation` / `set_automation` / `delete_automation` — full
   automation authoring for anything schedule_entity can't express
 - `get_scene` / `set_scene` / `delete_scene` — scene authoring
+- `list_devices`, `list_registry_entities`, `remove_device` — read and
+  manage Home Assistant's **device/entity registry** (over its WebSocket
+  API, since the REST API doesn't expose this at all). This is the data
+  behind Settings -> Devices & Services -> Devices — useful for finding
+  dead/leftover devices, understanding what an automation's "device
+  action" actually points at, and cleaning up entries that have gone
+  stale (e.g. after a Zigbee device is re-paired or removed).
 
 Every write tool applies immediately to your real devices — there's no
 staging/approval step inside the bridge itself. Claude has been instructed
@@ -60,9 +67,27 @@ talk to Home Assistant. Keep `.env` out of git (already in `.gitignore`).
 
 ## 3. Run it on Unraid
 
+If you have the `docker compose` plugin:
+
 ```
 docker compose up -d --build
 ```
+
+Otherwise (e.g. a plain Unraid install without the compose plugin), build
+and run the container directly:
+
+```
+docker build -t ha-claude-bridge:latest .
+docker run -d --name ha-claude-bridge --restart unless-stopped \
+  --env-file .env -p 8000:8000 ha-claude-bridge:latest
+```
+
+Note: `docker restart` does **not** re-read `--env-file` — if you change
+`.env` later, you need to `docker rm -f ha-claude-bridge` and re-run the
+`docker run` command above, not just restart it. If you're running
+`cloudflared` attached via `--network container:ha-claude-bridge` (see
+below), recreating this container gives it a new container ID, which
+breaks that attachment — recreate `cloudflared` the same way afterwards.
 
 This starts the bridge on port 8000. Check the logs, then confirm it's
 reachable:
@@ -109,11 +134,15 @@ work and doesn't require that.
 
 ## 5. Add it to Claude as a custom connector
 
-In Claude's connector settings (Customize → Connectors → Add), add a custom
-connector with your public URL, e.g. `https://ha-bridge.yourdomain.com/mcp`.
-Set Authentication to **None** and add a Request header `authorization` with
-value `Bearer <your BRIDGE_TOKEN>` — the same pattern used for this repo's
-sibling GitHub MCP connector.
+In Claude's connector settings, add a custom connector with your public URL,
+e.g. `https://ha-bridge.yourdomain.com/mcp`.
+
+Claude supports fixed request-header auth for custom connectors
+(`static_headers`) as a beta feature — as the admin of your own account you
+should be able to set header `Authorization` to `Bearer <your BRIDGE_TOKEN>`
+when adding the connector. If that option isn't available yet on your
+account, let me know in a chat with this project open and we can add a
+minimal OAuth shim instead (more code, but works everywhere).
 
 ## 6. Try it
 
@@ -138,3 +167,10 @@ Once connected, in a Claude chat with this connector enabled:
 - This bridge doesn't do OAuth; treat `BRIDGE_TOKEN` and `HA_TOKEN` like
   passwords. Rotate them (regenerate + update `.env` + restart) if you ever
   suspect either leaked.
+- `list_devices` / `list_registry_entities` / `remove_device` use Home
+  Assistant's WebSocket API (`/api/websocket`), opening a short-lived
+  connection per call rather than holding one open. `remove_device` detaches
+  a device from every config entry it belongs to — the same effect as the
+  HA UI's "Delete" button — but a device still actively provided by a live
+  integration connection may be recreated automatically; it's intended for
+  dead/leftover devices.

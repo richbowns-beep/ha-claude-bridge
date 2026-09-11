@@ -1,7 +1,7 @@
 """MCP server exposing Home Assistant automation/scene/schedule control to Claude.
 
 Run directly for local testing:
-    HA_URL=http://homeassistant.local:8123 HA_TOKEN=... BRIDGE_TOKEN=... \\
+    HA_URL=http://homeassistant.local:8123 HA_TOKEN=... BRIDGE_TOKEN=... \
         python3 -m app.server
 
 In Docker, gunicorn/uvicorn serves `app` from this module (see Dockerfile).
@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .auth import protect
 from .ha_client import HAClient
+from .ha_ws_client import HAWebSocketClient
 
 WEEKDAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
 
@@ -37,6 +38,7 @@ mcp = FastMCP(
 )
 
 _client: HAClient | None = None
+_ws_client: HAWebSocketClient | None = None
 
 
 def get_client() -> HAClient:
@@ -44,6 +46,13 @@ def get_client() -> HAClient:
     if _client is None:
         _client = HAClient()
     return _client
+
+
+def get_ws_client() -> HAWebSocketClient:
+    global _ws_client
+    if _ws_client is None:
+        _ws_client = HAWebSocketClient()
+    return _ws_client
 
 
 def _slugify(entity_id: str) -> str:
@@ -250,6 +259,93 @@ async def delete_scene(scene_id: str) -> Any:
     result = await get_client().delete_scene(scene_id)
     await get_client().reload_scenes()
     return result
+
+
+# ---- Device/entity registry (WebSocket API) --------------------------------
+#
+# Home Assistant's REST API has no visibility into the device/entity
+# registry — the data behind Settings -> Devices & Services -> Devices, and
+# what "device actions" in automations actually point at. These tools use
+# HA's WebSocket API instead, which is the only way to read or manage it.
+
+
+@mcp.tool()
+async def list_devices(search: str | None = None) -> list[dict]:
+    """List devices from Home Assistant's device registry (Settings ->
+    Devices & Services -> Devices). This is different from list_entities:
+    a device is a physical/logical thing (a Zigbee bulb, a hub) that owns
+    one or more entities. Useful for finding dead/leftover devices, or the
+    device_id behind an automation's "device action".
+
+    Args:
+        search: case-insensitive substring match against the device's name.
+    """
+    devices = await get_ws_client().list_devices()
+    out = []
+    for d in devices:
+        name = d.get("name_by_user") or d.get("name") or ""
+        if search and search.lower() not in name.lower():
+            continue
+        out.append(
+            {
+                "id": d.get("id"),
+                "name": name,
+                "manufacturer": d.get("manufacturer"),
+                "model": d.get("model"),
+                "area_id": d.get("area_id"),
+                "config_entries": d.get("config_entries"),
+                "disabled_by": d.get("disabled_by"),
+            }
+        )
+    return out
+
+
+@mcp.tool()
+async def list_registry_entities(device_id: str | None = None, search: str | None = None) -> list[dict]:
+    """List entries from Home Assistant's entity registry — includes
+    metadata list_entities doesn't have (which device an entity belongs to,
+    which integration/platform created it, whether it's disabled or hidden),
+    including entities with no current state (e.g. belonging to an
+    unavailable device).
+
+    Args:
+        device_id: filter to entities belonging to one device (from list_devices).
+        search: case-insensitive substring match against entity_id or name.
+    """
+    entities = await get_ws_client().list_registry_entities()
+    out = []
+    for e in entities:
+        if device_id and e.get("device_id") != device_id:
+            continue
+        name = e.get("name") or e.get("original_name") or ""
+        eid = e.get("entity_id", "")
+        if search:
+            needle = search.lower()
+            if needle not in eid.lower() and needle not in name.lower():
+                continue
+        out.append(
+            {
+                "entity_id": eid,
+                "name": name,
+                "device_id": e.get("device_id"),
+                "platform": e.get("platform"),
+                "disabled_by": e.get("disabled_by"),
+                "hidden_by": e.get("hidden_by"),
+            }
+        )
+    return out
+
+
+@mcp.tool()
+async def remove_device(device_id: str) -> dict:
+    """Permanently remove a device from Home Assistant's device registry
+    (and its entities with it) — the same effect as the "Delete" button on
+    a device's page in the HA UI. Irreversible — confirm the device's name
+    and id with the user in plain language first (use list_devices to find
+    it). Devices still actively provided by a live integration connection
+    may be recreated automatically; this is intended for dead/leftover
+    devices (e.g. one that's been unpaired or removed)."""
+    return await get_ws_client().remove_device(device_id)
 
 
 app = protect(mcp.streamable_http_app())
