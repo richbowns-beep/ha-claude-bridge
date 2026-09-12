@@ -348,6 +348,31 @@ async def remove_device(device_id: str) -> dict:
     return await get_ws_client().remove_device(device_id)
 
 
+@mcp.tool()
+async def reconfigure_device(device_id: str) -> dict:
+    """Re-run ZHA's device reconfiguration for a Zigbee device — the same
+    action as the "Reconfigure device" option on a device's page in the HA
+    UI. Re-establishes the device's Zigbee bindings/route, which is the
+    usual fix when a device correctly reports its own state but stops
+    responding to commands sent from Home Assistant (a broken/stale Zigbee
+    route), as opposed to a fully dead/unavailable device. Only works for
+    devices on the ZHA integration (use list_devices to find the device_id;
+    non-Zigbee devices will fail with a clear error since they have no
+    Zigbee IEEE address)."""
+    device = await get_ws_client().get_device(device_id)
+    ieee = next(
+        (conn_id for conn_type, conn_id in device.get("connections", []) if conn_type == "zigbee"),
+        None,
+    )
+    if ieee is None:
+        raise ValueError(
+            f"Device {device_id!r} has no Zigbee (ieee) connection — it isn't a ZHA "
+            "device, so reconfigure_device doesn't apply to it."
+        )
+    result = await get_client().call_service("zha", "reconfigure_device", data={"ieee": ieee})
+    return {"device_id": device_id, "ieee": ieee, "result": result}
+
+
 app = protect(mcp.streamable_http_app())
 
 

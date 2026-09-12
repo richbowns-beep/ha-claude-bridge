@@ -53,6 +53,16 @@ class HAWebSocketClient:
     async def list_devices(self) -> list[dict]:
         return await self._call("config/device_registry/list")
 
+    async def get_device(self, device_id: str) -> dict:
+        """Return the raw device registry entry (including `connections`,
+        which carries the Zigbee IEEE address for ZHA devices) — unlike the
+        server's list_devices tool, which trims the fields down."""
+        devices = await self.list_devices()
+        device = next((d for d in devices if d.get("id") == device_id), None)
+        if device is None:
+            raise HAWebSocketError(f"No device with id {device_id!r} found in the registry")
+        return device
+
     async def list_registry_entities(self) -> list[dict]:
         return await self._call("config/entity_registry/list")
 
@@ -64,10 +74,7 @@ class HAWebSocketClient:
         device) — for devices still actively provided by an integration, HA
         may recreate them on the next data refresh.
         """
-        devices = await self.list_devices()
-        device = next((d for d in devices if d.get("id") == device_id), None)
-        if device is None:
-            raise HAWebSocketError(f"No device with id {device_id!r} found in the registry")
+        device = await self.get_device(device_id)
         config_entries = device.get("config_entries") or []
         if not config_entries:
             raise HAWebSocketError(
